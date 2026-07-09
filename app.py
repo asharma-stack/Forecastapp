@@ -16,7 +16,7 @@ load_dotenv()
 
 import db
 from scheduler import start_scheduler, run_sync
-from harvest_client import fetch_time_entries, aggregate_entries
+from harvest_client import fetch_time_entries, aggregate_entries, is_billable_entry
 
 app = Flask(__name__, static_folder='static', template_folder='templates')
 
@@ -237,7 +237,8 @@ def _run_harvest_sync_job(from_date, to_date):
         print(f'[harvest sync] chunk {i+1}/{len(chunks)}: fetching {chunk_from} to {chunk_to}...', flush=True)
         try:
             entries = fetch_time_entries(chunk_from, chunk_to)
-            print(f'[harvest sync] chunk {i+1}/{len(chunks)}: got {len(entries)} raw entries', flush=True)
+            billable_count = sum(1 for e in entries if is_billable_entry(e))
+            print(f'[harvest sync] chunk {i+1}/{len(chunks)}: got {len(entries)} raw entries ({billable_count} billable, {len(entries)-billable_count} non-billable - only billable ones are aggregated)', flush=True)
             agg = aggregate_entries(entries)
             conn = db.get_connection()
             try:

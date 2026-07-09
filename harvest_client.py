@@ -54,14 +54,31 @@ def fetch_time_entries(from_date, to_date):
     return entries
 
 
+def is_billable_entry(entry):
+    """Harvest marks each time entry billable or not independently of the project
+    it's logged under - a billable project can still have non-billable entries
+    (write-offs, internal work logged under a client code, etc). Defaults to
+    True only if the field is genuinely missing, to avoid silently dropping data
+    from an unexpected API response shape."""
+    return bool(entry.get('billable', True))
+
+
 def aggregate_entries(entries):
     """
     Collapse raw time entries into {(person, project_id, month): hours} totals -
     the same aggregation the app stores, so a multi-year pull never becomes a
     multi-hundred-thousand-row problem in memory or in the database.
+
+    Only billable entries are included (see is_billable_entry above). This matters
+    because every dollar figure in this app - Forecast vs Actual Amount, Project
+    Forecast vs Actual ($), the "Actual (Harvest-synced)" KPI - is computed as
+    hours x rate. Including non-billable hours in that math overstates actual
+    revenue and produces misleading variance numbers.
     """
     agg = {}
     for e in entries:
+        if not is_billable_entry(e):
+            continue
         spent_date = e.get('spent_date', '')
         if not spent_date or len(spent_date) < 7:
             continue
