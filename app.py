@@ -204,15 +204,23 @@ def _date_chunks(from_date, to_date, chunk_days=30):
 
 
 def _run_harvest_sync_job(from_date, to_date):
-    """Does the actual work, off the request thread - see harvest_sync() below for why."""
-    import datetime
+    """Does the actual work, off the request thread - see harvest_sync() below for why.
+    Logs each step with print() (flushed immediately) so Railway's log stream shows
+    real progress - this replaced a silent version we couldn't debug blind."""
+    import datetime, sys
+    print(f'[harvest sync] job started: {from_date} to {to_date}', flush=True)
     total_entries = 0
     all_agg_keys = set()
     chunk_errors = []
 
-    for chunk_from, chunk_to in _date_chunks(from_date, to_date, chunk_days=30):
+    chunks = list(_date_chunks(from_date, to_date, chunk_days=30))
+    print(f'[harvest sync] split into {len(chunks)} chunk(s): {chunks}', flush=True)
+
+    for i, (chunk_from, chunk_to) in enumerate(chunks):
+        print(f'[harvest sync] chunk {i+1}/{len(chunks)}: fetching {chunk_from} to {chunk_to}...', flush=True)
         try:
             entries = fetch_time_entries(chunk_from, chunk_to)
+            print(f'[harvest sync] chunk {i+1}/{len(chunks)}: got {len(entries)} raw entries', flush=True)
             agg = aggregate_entries(entries)
             conn = db.get_connection()
             try:
@@ -227,13 +235,16 @@ def _run_harvest_sync_job(from_date, to_date):
                 conn.close()
             total_entries += len(entries)
             all_agg_keys.update(agg.keys())
+            print(f'[harvest sync] chunk {i+1}/{len(chunks)}: saved {len(agg)} person/project/month rows', flush=True)
         except Exception as e:
+            print(f'[harvest sync] chunk {i+1}/{len(chunks)}: FAILED - {type(e).__name__}: {e}', flush=True)
             chunk_errors.append(f'{chunk_from} to {chunk_to}: {e}')
 
     db.set_meta('last_harvest_sync', datetime.datetime.now().isoformat())
     db.set_meta('last_harvest_sync_entries', str(total_entries))
     db.set_meta('harvest_sync_in_progress', 'false')
     db.set_meta('last_harvest_sync_errors', '; '.join(chunk_errors) if chunk_errors else '')
+    print(f'[harvest sync] job finished: {total_entries} total entries, {len(all_agg_keys)} aggregated rows, {len(chunk_errors)} chunk error(s)', flush=True)
 
 
 # ---------------------------------------------------------------- actuals / harvest
