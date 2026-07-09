@@ -10,7 +10,14 @@ want to.
 import sqlite3
 import os
 
-DB_PATH = os.path.join(os.path.dirname(__file__), 'forecast_ledger.db')
+# DATA_DIR defaults to this file's folder (fine for local use). On Railway,
+# set DATA_DIR to your mounted volume's path (e.g. /app/data) so the database
+# survives restarts/redeploys - do NOT mount a volume at /app itself, since
+# that's where your app code also lives and an empty volume there would hide it.
+DATA_DIR = os.environ.get('DATA_DIR', os.path.dirname(__file__))
+os.makedirs(DATA_DIR, exist_ok=True)
+
+DB_PATH = os.path.join(DATA_DIR, 'forecast_ledger.db')
 SCHEMA_PATH = os.path.join(os.path.dirname(__file__), 'schema.sql')
 
 
