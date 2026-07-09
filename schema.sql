@@ -73,3 +73,12 @@ CREATE TABLE IF NOT EXISTS locked_months (
     month TEXT PRIMARY KEY,   -- 'YYYY-MM'
     locked_at TEXT NOT NULL
 );
+
+-- Employment status per person, purely for color-coding in the UI (green dot =
+-- Employee, blue = Contractor, grey = Ex-employee). Defaults to 'Employee' for
+-- anyone not explicitly set. Not tied to project/team rows on purpose - status
+-- persists even if someone's team assignment is later removed.
+CREATE TABLE IF NOT EXISTS people (
+    person TEXT PRIMARY KEY,
+    status TEXT NOT NULL DEFAULT 'Employee'
+);

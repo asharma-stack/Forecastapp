@@ -73,6 +73,7 @@ def bootstrap():
     last_sync = db.get_meta('last_harvest_sync')
     last_sync_entries = db.get_meta('last_harvest_sync_entries')
     locked_months = [r['month'] for r in db.query('SELECT month FROM locked_months')]
+    people_status = {r['person']: r['status'] for r in db.query('SELECT * FROM people')}
 
     forecast = {f"{r['team_id']}|{r['month']}": r['days'] for r in forecast_rows}
     actuals = {f"{r['person']}|{r['project_id']}|{r['month']}": r['hours'] for r in actuals_rows}
@@ -82,7 +83,7 @@ def bootstrap():
         'projects': projects, 'team': team, 'milestones': milestones,
         'workingDays': working_days_map, 'forecast': forecast, 'actuals': actuals,
         'lastHarvestSync': last_sync, 'lastHarvestSyncEntries': last_sync_entries,
-        'lockedMonths': locked_months,
+        'lockedMonths': locked_months, 'peopleStatus': people_status,
     })
 
 
@@ -158,6 +159,22 @@ def lock_month():
     db.execute(
         'INSERT INTO locked_months (month, locked_at) VALUES (?, ?) ON CONFLICT(month) DO NOTHING',
         (month, __import__('datetime').datetime.now().isoformat())
+    )
+    return jsonify({'ok': True})
+
+
+@app.route('/api/people/status', methods=['POST'])
+def set_person_status():
+    """Sets a person's employment status (Employee/Contractor/Ex-employee), used
+    purely for color-coding in the UI. Persists independent of team assignments."""
+    body = request.json or {}
+    person = body.get('person')
+    status = body.get('status', 'Employee')
+    if not person:
+        return jsonify({'ok': False, 'error': 'person required'}), 400
+    db.execute(
+        'INSERT INTO people (person, status) VALUES (?,?) ON CONFLICT(person) DO UPDATE SET status = excluded.status',
+        (person, status)
     )
     return jsonify({'ok': True})
 

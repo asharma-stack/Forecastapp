@@ -2,7 +2,7 @@
 
 let YEAR = 2026;
 let DATA = { projects: [], team: [], milestones: [], workingDays: {}, forecast: {}, actuals: {} };
-let UI = { tab: 'dashboard', forecastProject: null, dashboardFilter: null, utilPerson: null, fvaPerson: null, fvaAmountPerson: null, fvaPersonFilter: null, fvaAmountPersonFilter: null, utilVsForecastPerson: null, utilVsForecastPersonFilter: null };
+let UI = { tab: 'dashboard', forecastProject: null, dashboardFilter: null, utilPerson: null, fvaPerson: null, fvaAmountPerson: null, fvaPersonFilter: null, fvaAmountPersonFilter: null, utilVsForecastPerson: null, utilVsForecastPersonFilter: null, projFvaAmountProject: null, projFvaAmountFilter: null };
 
 function toast(msg, kind){
   const el = document.getElementById('toast') || (function(){
@@ -91,6 +91,24 @@ function actualDollarsForProject(projectId){
   return total;
 }
 function allPeople(){ return [...new Set(DATA.team.map(t=>t.person))].sort(); }
+function activePeopleForYear(){
+  const MONTHS = getMonths();
+  return allPeople().filter(person=>{
+    const hasForecast = MONTHS.some(m=>personForecastDaysInMonth(person, m.key) > 0);
+    const hasActual = MONTHS.some(m=>personActualDaysInMonth(person, m.key) > 0);
+    return hasForecast || hasActual;
+  });
+}
+function personStatus(person){ return (DATA.peopleStatus && DATA.peopleStatus[person]) || 'Employee'; }
+function personStatusDotClass(status){
+  if(status==='Contractor') return 'status-contractor';
+  if(status==='Ex-employee') return 'status-exemployee';
+  return 'status-employee';
+}
+function personLabel(person){
+  const status = personStatus(person);
+  return `<span class="person-dot ${personStatusDotClass(status)}" title="${status}"></span>${person}`;
+}
 function personForecastDaysInMonth(person, monthKey){
   return DATA.team.filter(t=>t.person===person).reduce((s,t)=>s+forecastVal(t.id, monthKey), 0);
 }
@@ -110,10 +128,12 @@ const TABS = [
   {id:'forecast', label:'Forecast'},
   {id:'projects', label:'Projects'},
   {id:'milestones', label:'Milestones'},
+  {id:'people', label:'People'},
   {id:'utilization', label:'Utilization (Forecast)'},
   {id:'utilvsforecast', label:'% Utilization vs Forecast'},
   {id:'forecastvsactual', label:'Forecast vs Actual'},
   {id:'forecastvsactualamount', label:'Forecast vs Actual - Amount'},
+  {id:'projectforecastvsactualamount', label:'Project - Forecast vs Actual ($)'},
   {id:'actuals', label:'Actuals & Harvest Sync'},
   {id:'guide', label:'Guide'},
 ];
@@ -128,8 +148,10 @@ function render(){
   const main = document.getElementById('main');
   const renderers = {
     dashboard: renderDashboard, forecast: renderForecast, projects: renderProjects,
-    milestones: renderMilestones, utilization: renderUtilization, utilvsforecast: renderUtilVsForecast,
+    milestones: renderMilestones, people: renderPeople,
+    utilization: renderUtilization, utilvsforecast: renderUtilVsForecast,
     forecastvsactual: renderForecastVsActual, forecastvsactualamount: renderForecastVsActualAmount,
+    projectforecastvsactualamount: renderProjectForecastVsActualAmount,
     actuals: renderActuals, guide: renderGuide,
   };
   main.innerHTML = (renderers[UI.tab] || renderDashboard)();
@@ -485,10 +507,40 @@ async function removeMilestone(id){
   catch(e){ toast('Could not remove: '+e.message, 'bad'); }
 }
 
+/* ==================== PEOPLE (status management) ==================== */
+async function setPersonStatus(person, status){
+  try{
+    await apiPost('/api/people/status', {person, status});
+    DATA.peopleStatus = DATA.peopleStatus || {};
+    DATA.peopleStatus[person] = status;
+    render();
+  }catch(e){ toast('Could not update status: '+e.message, 'bad'); }
+}
+function renderPeople(){
+  const people = allPeople();
+  let rows = people.map(person=>{
+    const status = personStatus(person);
+    const safeP = person.replace(/'/g,"\\'");
+    return `<tr><td class="left">${personLabel(person)}</td>
+      <td class="left"><select onchange="setPersonStatus('${safeP}', this.value)">
+        <option ${status==='Employee'?'selected':''}>Employee</option>
+        <option ${status==='Contractor'?'selected':''}>Contractor</option>
+        <option ${status==='Ex-employee'?'selected':''}>Ex-employee</option>
+      </select></td></tr>`;
+  }).join('');
+  return `
+  <h1>People</h1>
+  <div class="lead">Mark each person's status here - it colors their name with a small dot everywhere else in the app (green = Employee, blue = Contractor, grey = Ex-employee), so you can tell them apart at a glance. Other tabs only show people who have some forecast or actual time logged this year, but everyone ever on a project shows up here so you can set a status for anyone, including people who've since left.</div>
+  <div class="panel"><div style="overflow-x:auto"><table>
+    <tr><th class="left">Person</th><th class="left">Status</th></tr>
+    ${rows || '<tr><td colspan="2" class="empty">No team members yet.</td></tr>'}
+  </table></div></div>`;
+}
+
 /* ==================== UTILIZATION (forecast) ==================== */
 function renderUtilization(){
   const MONTHS = getMonths();
-  const people = allPeople();
+  const people = activePeopleForYear();
   let rows = people.map(person=>{
     const isOpen = UI.utilPerson === person;
     const monthCells = MONTHS.map(m=>{
@@ -498,7 +550,7 @@ function renderUtilization(){
       const color = pct>1.05? 'var(--watch)' : (pct<0.5? 'var(--ink-soft)':'var(--good)');
       return `<td style="color:${color}">${fmtPct(pct)}<div class="muted" style="font-size:9.5px">${fmtDays(fdays)}d</div></td>`;
     }).join('');
-    const summaryRow = `<tr><td class="left"><span class="expand-toggle" onclick="toggleUtil('${person.replace(/'/g,"\\'")}')">${isOpen?'-':'+'}</span> ${person}</td>${monthCells}</tr>`;
+    const summaryRow = `<tr><td class="left"><span class="expand-toggle" onclick="toggleUtil('${person.replace(/'/g,"\\'")}')">${isOpen?'-':'+'}</span> ${personLabel(person)}</td>${monthCells}</tr>`;
     let detail = '';
     if(isOpen){
       const rowsForPerson = DATA.team.filter(t=>t.person===person);
@@ -535,7 +587,7 @@ function setFvaPersonFilter(person){ UI.fvaPersonFilter = person; render(); }
 function renderForecastVsActual(){
   const MONTHS = getMonths();
   const haveActuals = Object.keys(DATA.actuals).length>0;
-  const people = UI.fvaPersonFilter ? [UI.fvaPersonFilter] : allPeople();
+  const people = UI.fvaPersonFilter ? [UI.fvaPersonFilter] : activePeopleForYear();
 
   const headRow1 = `<tr><th class="left" rowspan="2">Person</th>${MONTHS.map(m=>`<th colspan="3">${m.label}</th>`).join('')}</tr>`;
   const headRow2 = `<tr>${MONTHS.map(()=>`<th>Forecast</th><th>Actual</th><th>Variance</th>`).join('')}</tr>`;
@@ -549,7 +601,7 @@ function renderForecastVsActual(){
       const color = Math.abs(delta) < 0.5 ? 'var(--ink-soft)' : (delta>0? 'var(--watch)':'var(--bad)');
       return `<td>${fmtDays(f)}</td><td>${fmtDays(a)}</td><td style="color:${color}">${delta>=0?'+':''}${fmtDays(delta)}</td>`;
     }).join('');
-    const mainRow = `<tr><td class="left"><span class="expand-toggle" onclick="toggleFvaPerson('${person.replace(/'/g,"\\'")}')">${isOpen?'-':'+'}</span> ${person}</td>${cells}</tr>`;
+    const mainRow = `<tr><td class="left"><span class="expand-toggle" onclick="toggleFvaPerson('${person.replace(/'/g,"\\'")}')">${isOpen?'-':'+'}</span> ${personLabel(person)}</td>${cells}</tr>`;
     let detail = '';
     if(isOpen){
       const forecastProjIds = DATA.team.filter(t=>t.person===person).map(t=>t.project_id);
@@ -597,7 +649,7 @@ function setUtilVsForecastPersonFilter(person){ UI.utilVsForecastPersonFilter = 
 function renderUtilVsForecast(){
   const MONTHS = getMonths();
   const haveActuals = Object.keys(DATA.actuals).length>0;
-  const people = UI.utilVsForecastPersonFilter ? [UI.utilVsForecastPersonFilter] : allPeople();
+  const people = UI.utilVsForecastPersonFilter ? [UI.utilVsForecastPersonFilter] : activePeopleForYear();
 
   const headRow1 = `<tr><th class="left" rowspan="2">Person</th>${MONTHS.map(m=>`<th colspan="3">${m.label}</th>`).join('')}</tr>`;
   const headRow2 = `<tr>${MONTHS.map(()=>`<th>Forecast %</th><th>Actual %</th><th>Variance</th>`).join('')}</tr>`;
@@ -612,7 +664,7 @@ function renderUtilVsForecast(){
       const color = Math.abs(delta) < 0.02 ? 'var(--ink-soft)' : (delta>0? 'var(--watch)':'var(--bad)');
       return `<td>${fmtPct(f)}</td><td>${fmtPct(a)}</td><td style="color:${color}">${delta>=0?'+':''}${fmtPct(delta)}</td>`;
     }).join('');
-    const mainRow = `<tr><td class="left"><span class="expand-toggle" onclick="toggleUtilVsForecastPerson('${person.replace(/'/g,"\\'")}')">${isOpen?'-':'+'}</span> ${person}</td>${cells}</tr>`;
+    const mainRow = `<tr><td class="left"><span class="expand-toggle" onclick="toggleUtilVsForecastPerson('${person.replace(/'/g,"\\'")}')">${isOpen?'-':'+'}</span> ${personLabel(person)}</td>${cells}</tr>`;
     let detail = '';
     if(isOpen){
       const forecastProjIds = DATA.team.filter(t=>t.person===person).map(t=>t.project_id);
@@ -685,7 +737,7 @@ function personActualDollarInMonthForProject(person, projectId, monthKey){
 function renderForecastVsActualAmount(){
   const MONTHS = getMonths();
   const haveActuals = Object.keys(DATA.actuals).length>0;
-  const people = UI.fvaAmountPersonFilter ? [UI.fvaAmountPersonFilter] : allPeople();
+  const people = UI.fvaAmountPersonFilter ? [UI.fvaAmountPersonFilter] : activePeopleForYear();
 
   const headRow1 = `<tr><th class="left" rowspan="2">Person</th>${MONTHS.map(m=>`<th colspan="3">${m.label}</th>`).join('')}</tr>`;
   const headRow2 = `<tr>${MONTHS.map(()=>`<th>Forecast</th><th>Actual</th><th>Variance</th>`).join('')}</tr>`;
@@ -699,7 +751,7 @@ function renderForecastVsActualAmount(){
       const color = Math.abs(delta) < 1 ? 'var(--ink-soft)' : (delta>0? 'var(--watch)':'var(--bad)');
       return `<td>${fmtMoney(f)}</td><td>${fmtMoney(a)}</td><td style="color:${color}">${delta>=0?'+':''}${fmtMoney(delta)}</td>`;
     }).join('');
-    const mainRow = `<tr><td class="left"><span class="expand-toggle" onclick="toggleFvaAmountPerson('${person.replace(/'/g,"\\'")}')">${isOpen?'-':'+'}</span> ${person}</td>${cells}</tr>`;
+    const mainRow = `<tr><td class="left"><span class="expand-toggle" onclick="toggleFvaAmountPerson('${person.replace(/'/g,"\\'")}')">${isOpen?'-':'+'}</span> ${personLabel(person)}</td>${cells}</tr>`;
     let detail = '';
     if(isOpen){
       const forecastProjIds = DATA.team.filter(t=>t.person===person).map(t=>t.project_id);
@@ -739,6 +791,84 @@ function renderForecastVsActualAmount(){
   </div>`;
 }
 
+/* ==================== PROJECT - FORECAST VS ACTUAL ($) ==================== */
+function toggleProjFvaAmountProject(pid){ UI.projFvaAmountProject = UI.projFvaAmountProject===pid? null : pid; render(); }
+function setProjFvaAmountFilter(id){ UI.projFvaAmountFilter = id; render(); }
+function projectActualDollarInMonth(project, monthKey){
+  let total = 0;
+  Object.keys(DATA.actuals).forEach(key=>{
+    const [person, pid, month] = key.split('|');
+    if(pid===project.id && month===monthKey){
+      total += (DATA.actuals[key]/8) * personRateFor(person, pid);
+    }
+  });
+  return total;
+}
+function renderProjectForecastVsActualAmount(){
+  const MONTHS = getMonths();
+  const haveActuals = Object.keys(DATA.actuals).length>0;
+  // Projects are already billable-only (the backend filters out non-billable codes before
+  // this data ever reaches the frontend) - here we further scope to time-based projects
+  // (milestone revenue isn't hours x rate, so it doesn't fit this comparison) and only
+  // show ones with some forecast or some actual logged this year.
+  const timeProjects = DATA.projects.filter(p=>p.type==='time');
+  const candidateProjects = UI.projFvaAmountFilter ? timeProjects.filter(p=>p.id===UI.projFvaAmountFilter) : timeProjects;
+  const projectsToShow = candidateProjects.filter(p=>{
+    const hasForecast = MONTHS.some(m=>projectMonthRevenue(p, m.key) > 0);
+    const hasActual = MONTHS.some(m=>projectActualDollarInMonth(p, m.key) > 0);
+    return hasForecast || hasActual;
+  });
+
+  const headRow1 = `<tr><th class="left" rowspan="2">Project</th>${MONTHS.map(m=>`<th colspan="3">${m.label}</th>`).join('')}</tr>`;
+  const headRow2 = `<tr>${MONTHS.map(()=>`<th>Forecast</th><th>Actual</th><th>Variance</th>`).join('')}</tr>`;
+
+  let rows = projectsToShow.map(p=>{
+    const isOpen = UI.projFvaAmountProject === p.id;
+    const cells = MONTHS.map(m=>{
+      const f = projectMonthRevenue(p, m.key);
+      const a = projectActualDollarInMonth(p, m.key);
+      const delta = a - f;
+      const color = Math.abs(delta) < 1 ? 'var(--ink-soft)' : (delta>0? 'var(--watch)':'var(--bad)');
+      return `<td>${fmtMoney(f)}</td><td>${fmtMoney(a)}</td><td style="color:${color}">${delta>=0?'+':''}${fmtMoney(delta)}</td>`;
+    }).join('');
+    const mainRow = `<tr><td class="left"><span class="expand-toggle" onclick="toggleProjFvaAmountProject('${p.id}')">${isOpen?'-':'+'}</span> ${p.id} — ${p.name}</td>${cells}</tr>`;
+    let detail = '';
+    if(isOpen){
+      const teamPeople = teamFor(p.id).map(t=>t.person);
+      const actualPeople = Object.keys(DATA.actuals).filter(k=>k.split('|')[1]===p.id).map(k=>k.split('|')[0]);
+      const peopleForProject = [...new Set([...teamPeople, ...actualPeople])].filter(person=>{
+        const hasF = MONTHS.some(m=>personForecastDollarInMonthForProject(person, p.id, m.key) > 0);
+        const hasA = MONTHS.some(m=>personActualDollarInMonthForProject(person, p.id, m.key) > 0);
+        return hasF || hasA;
+      });
+      detail = peopleForProject.map(person=>{
+        const pcells = MONTHS.map(m=>{
+          const f = personForecastDollarInMonthForProject(person, p.id, m.key);
+          const a = personActualDollarInMonthForProject(person, p.id, m.key);
+          const delta = a - f;
+          const color = Math.abs(delta) < 1 ? 'var(--ink-soft)' : (delta>0? 'var(--watch)':'var(--bad)');
+          return `<td>${fmtMoney(f)}</td><td>${fmtMoney(a)}</td><td style="color:${color}">${delta>=0?'+':''}${fmtMoney(delta)}</td>`;
+        }).join('');
+        return `<tr class="subrow"><td class="left">&nbsp;&nbsp;${personLabel(person)}</td>${pcells}</tr>`;
+      }).join('');
+    }
+    return mainRow + detail;
+  }).join('');
+
+  return `
+  <h1>Project - Forecast vs Actual ($)</h1>
+  <div class="lead">Forecasted revenue vs actual revenue (from synced Harvest data), per billable time-based project, month by month, side by side. Only projects with some forecast or some logged time this year are shown. Click + to see the per-person breakdown within a project. ${haveActuals?'':'No Harvest data synced yet - use the Actuals tab.'}</div>
+  <div class="toolbar">${yearSelector()}
+    <div class="field" style="min-width:300px"><label>Filter to a project</label>${projectCombo(UI.projFvaAmountFilter,'setProjFvaAmountFilter',{allowAll:true, filterFn:p=>p.type==='time'})}</div>
+  </div>
+  <div class="panel">
+    <h2>Month by month - $ (${YEAR})</h2>
+    <div style="overflow-x:auto"><table>
+      ${headRow1}${headRow2}
+      ${rows || '<tr><td colspan="37" class="empty">No billable, time-based project has forecast or actual data yet.</td></tr>'}</table></div>
+  </div>`;
+}
+
 /* ==================== ACTUALS & HARVEST SYNC ==================== */
 function renderActuals(){
   const cmk = currentMonthKey();
@@ -771,7 +901,7 @@ function renderActuals(){
   <div class="lead">This runs a real server-side app, so it can call the Harvest API directly - no export, no upload, no CORS or browser storage limits. A background job also re-syncs automatically every 24 hours while this app is running (see Guide tab for true OS-level scheduling).</div>
   <div class="panel">
     <h2>Sync from Harvest</h2>
-    <div class="muted" style="margin-bottom:10px">Last automatic/manual sync: ${lastSync} (${lastSyncEntries} entries fetched that time). Manual syncs run in the background - click Sync, then refresh this page after a bit to see the result.</div>
+    <div class="muted" style="margin-bottom:10px">Last automatic/manual sync: ${lastSync} (${lastSyncEntries} entries fetched that time).</div>
     <div class="grid-form" style="grid-template-columns:repeat(3,1fr)">
       <div class="field"><label>From</label><input type="date" id="sync-from" value="${monthStart}"></div>
       <div class="field"><label>To</label><input type="date" id="sync-to" value="${today}"></div>
@@ -844,9 +974,11 @@ function renderGuide(){
     3. <code>python seed_data.py</code> once, to load your real 45 projects/491 team rows/2026 forecast.<br>
     4. <code>python app.py</code>, then open http://localhost:5000</p></div>
   <div class="panel"><h2>Automatic Harvest sync</h2>
-    <p class="muted">While <code>app.py</code> is running, a background job re-syncs the last 2 days of Harvest data every 24 hours automatically. Manual syncs (from this tab) also run in the background now - the page returns immediately after you click Sync, and the actual work happens separately so it can't be cut off by a hosting platform's request timeout. Refresh the page after a bit to see the result. For a sync that runs even when the app isn't open at all, schedule <code>python sync_once.py</code> with cron (macOS/Linux) or Task Scheduler (Windows) - see comments at the top of that file for exact setup.</p></div>
+    <p class="muted">While <code>app.py</code> is running, a background job re-syncs the last 2 days of Harvest data every 24 hours automatically. For a sync that runs even when the app isn't open, schedule <code>python sync_once.py</code> with cron (macOS/Linux) or Task Scheduler (Windows) - see comments at the top of that file for exact setup.</p></div>
   <div class="panel"><h2>Multi-year forecasting</h2>
     <p class="muted">The Year selector at the top of Dashboard/Forecast/Utilization/Milestones switches which 12 months you're viewing and editing. Data is stored per calendar month in SQLite with no practical size limit.</p></div>
+  <div class="panel"><h2>People and status color-coding</h2>
+    <p class="muted">The People tab lets you mark anyone as Employee, Contractor, or Ex-employee - this shows as a small colored dot next to their name everywhere else (green/blue/grey). Other tabs only list people with some forecast or actual time logged in the currently selected year, so people with zero activity that year don't clutter the view, but they still show up in the People tab so you can set a status for them regardless.</p></div>
   <div class="panel"><h2>Backing up your data</h2>
     <p class="muted">Everything lives in <code>forecast_ledger.db</code> in this folder - a single SQLite file. Back it up by simply copying that file.</p></div>`;
 }
