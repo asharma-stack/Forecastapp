@@ -254,6 +254,15 @@ def _run_harvest_sync_job(from_date, to_date):
             total_entries += len(entries)
             all_agg_keys.update(agg.keys())
             print(f'[harvest sync] chunk {i+1}/{len(chunks)}: saved {len(agg)} person/project/month rows', flush=True)
+
+            known_project_ids = {r['id'] for r in db.query('SELECT id FROM projects')}
+            unmatched = {}
+            for (person, project_id, month), hours in agg.items():
+                if project_id not in known_project_ids:
+                    unmatched[project_id] = unmatched.get(project_id, 0) + hours
+            if unmatched:
+                total_unmatched_hours = sum(unmatched.values())
+                print(f'[harvest sync] chunk {i+1}/{len(chunks)}: WARNING - {total_unmatched_hours:.1f} billable hours are under project code(s) that do NOT match any project in this app: {unmatched} - these hours are saved but will never show up against a real project anywhere in the app, since nothing joins to them. If this number is large, the project codes in Harvest likely differ from the ones seeded here.', flush=True)
         except Exception as e:
             print(f'[harvest sync] chunk {i+1}/{len(chunks)}: FAILED - {type(e).__name__}: {e}', flush=True)
             chunk_errors.append(f'{chunk_from} to {chunk_to}: {e}')

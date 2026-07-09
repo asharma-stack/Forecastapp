@@ -32,10 +32,19 @@ td{padding:6px 8px;border-bottom:1px solid var(--line);text-align:right;font-fam
 tr.total td{border-top:2px solid var(--ink);border-bottom:none;font-weight:600;}
 tr.subtotal td{background:#FBFAF7;font-weight:600;border-top:1px solid var(--ink-soft);}
 tr.person-header td{background:var(--accent-soft);border-top:2px solid var(--accent);border-bottom:none;padding-top:10px;}
-.person-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:middle;}
-.person-dot.status-employee{background:var(--good);}
-.person-dot.status-contractor{background:var(--accent);}
-.person-dot.status-exemployee{background:var(--ink-soft);}
+.person-dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:7px;vertical-align:middle;border:1px solid rgba(0,0,0,0.15);}
+.person-dot.status-employee{background:#1E7145;}
+.person-dot.status-contractor{background:#B8720E;}
+.person-dot.status-exemployee{background:#8A8480;}
+.person-name.status-exemployee{color:var(--ink-soft);font-style:italic;text-decoration:line-through;text-decoration-color:#B0ABA6;}
+.person-name.status-contractor{font-weight:600;}
+.status-legend{display:flex;gap:18px;align-items:center;flex-wrap:wrap;margin-bottom:16px;padding:10px 14px;background:var(--surface);border:1px solid var(--line);border-radius:6px;font-size:12px;}
+.status-legend .legend-item{display:flex;align-items:center;gap:6px;}
+.status-legend .legend-item b{font-weight:600;}
+td.month-shade, th.month-shade{background:#F1F0EC;}
+td.month-end, th.month-end{border-right:2px solid var(--ink-soft);}
+th.month-end-h{border-right:2px solid var(--ink);}
+tr:hover td.month-shade{background:#EBEAE5;}
 tr:hover td{background:#FBFAF7;}
 input, select{font-family:'IBM Plex Mono',monospace;font-size:12.5px;border:1px solid var(--line);border-radius:4px;padding:5px 7px;background:#fff;color:var(--ink);width:100%;}
 input[type=text], select, input[type=date]{font-family:'Inter',sans-serif;}
