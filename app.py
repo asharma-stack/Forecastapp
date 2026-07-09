@@ -191,34 +191,67 @@ def set_working_days():
     return jsonify({'ok': True})
 
 
+def _date_chunks(from_date, to_date, chunk_days=30):
+    import datetime
+    start = datetime.date.fromisoformat(from_date)
+    end = datetime.date.fromisoformat(to_date)
+    cur = start
+    while cur <= end:
+        chunk_end = min(cur + datetime.timedelta(days=chunk_days - 1), end)
+        yield cur.isoformat(), chunk_end.isoformat()
+        cur = chunk_end + datetime.timedelta(days=1)
+
+
 # ---------------------------------------------------------------- actuals / harvest
 @app.route('/api/harvest/sync', methods=['POST'])
 def harvest_sync():
-    """Manual on-demand sync for an arbitrary date range, triggered from the UI."""
+    """Manual on-demand sync for an arbitrary date range, triggered from the UI.
+    Large ranges are split into 30-day chunks so a single slow/hanging Harvest
+    API call can't tie up the whole request indefinitely - each chunk commits
+    to the database as soon as it succeeds, so partial progress is never lost
+    even if a later chunk fails or times out."""
     body = request.json or {}
     from_date = body.get('from')
     to_date = body.get('to')
     if not from_date or not to_date:
         return jsonify({'ok': False, 'error': 'from and to dates are required'}), 400
-    try:
-        entries = fetch_time_entries(from_date, to_date)
-        agg = aggregate_entries(entries)
-        conn = db.get_connection()
+
+    total_entries = 0
+    all_agg_keys = set()
+    chunk_errors = []
+
+    for chunk_from, chunk_to in _date_chunks(from_date, to_date, chunk_days=30):
         try:
-            for (person, project_id, month), hours in agg.items():
-                conn.execute(
-                    '''INSERT INTO actuals (person, project_id, month, hours) VALUES (?,?,?,?)
-                       ON CONFLICT(person, project_id, month) DO UPDATE SET hours = excluded.hours''',
-                    (person, project_id, month, hours)
-                )
-            conn.commit()
-        finally:
-            conn.close()
-        db.set_meta('last_harvest_sync', __import__('datetime').datetime.now().isoformat())
-        db.set_meta('last_harvest_sync_entries', str(len(entries)))
-        return jsonify({'ok': True, 'entriesFetched': len(entries), 'aggregatedKeys': len(agg)})
-    except Exception as e:
-        return jsonify({'ok': False, 'error': str(e)}), 500
+            entries = fetch_time_entries(chunk_from, chunk_to)
+            agg = aggregate_entries(entries)
+            conn = db.get_connection()
+            try:
+                for (person, project_id, month), hours in agg.items():
+                    conn.execute(
+                        '''INSERT INTO actuals (person, project_id, month, hours) VALUES (?,?,?,?)
+                           ON CONFLICT(person, project_id, month) DO UPDATE SET hours = excluded.hours''',
+                        (person, project_id, month, hours)
+                    )
+                conn.commit()
+            finally:
+                conn.close()
+            total_entries += len(entries)
+            all_agg_keys.update(agg.keys())
+        except Exception as e:
+            chunk_errors.append(f'{chunk_from} to {chunk_to}: {e}')
+
+    db.set_meta('last_harvest_sync', __import__('datetime').datetime.now().isoformat())
+    db.set_meta('last_harvest_sync_entries', str(total_entries))
+
+    if chunk_errors and total_entries == 0:
+        # Every chunk failed - report as a real failure.
+        return jsonify({'ok': False, 'error': '; '.join(chunk_errors)}), 500
+    result = {'ok': True, 'entriesFetched': total_entries, 'aggregatedKeys': len(all_agg_keys)}
+    if chunk_errors:
+        # Partial success - some date ranges synced, some didn't. Still report ok=True
+        # since real data was saved, but surface which ranges need a retry.
+        result['warning'] = f"{len(chunk_errors)} date range(s) failed and may need retrying: " + '; '.join(chunk_errors)
+    return jsonify(result)
 
 
 @app.route('/api/actuals/clear', methods=['POST'])
