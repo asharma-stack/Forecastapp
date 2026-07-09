@@ -771,7 +771,7 @@ function renderActuals(){
   <div class="lead">This runs a real server-side app, so it can call the Harvest API directly - no export, no upload, no CORS or browser storage limits. A background job also re-syncs automatically every 24 hours while this app is running (see Guide tab for true OS-level scheduling).</div>
   <div class="panel">
     <h2>Sync from Harvest</h2>
-    <div class="muted" style="margin-bottom:10px">Last automatic/manual sync: ${lastSync} (${lastSyncEntries} entries fetched that time).</div>
+    <div class="muted" style="margin-bottom:10px">Last automatic/manual sync: ${lastSync} (${lastSyncEntries} entries fetched that time). Manual syncs run in the background - click Sync, then refresh this page after a bit to see the result.</div>
     <div class="grid-form" style="grid-template-columns:repeat(3,1fr)">
       <div class="field"><label>From</label><input type="date" id="sync-from" value="${monthStart}"></div>
       <div class="field"><label>To</label><input type="date" id="sync-to" value="${today}"></div>
@@ -806,13 +806,12 @@ async function syncHarvest(){
   const to = document.getElementById('sync-to').value;
   const statusEl = document.getElementById('sync-status');
   if(!from || !to){ statusEl.textContent = 'Pick both dates.'; return; }
-  statusEl.textContent = 'Syncing from Harvest...';
+  statusEl.textContent = 'Starting sync...';
   try{
     const result = await apiPost('/api/harvest/sync', {from, to});
-    statusEl.textContent = `Fetched ${result.entriesFetched} entries, updated ${result.aggregatedKeys} person/project/month combinations.`;
-    await loadBootstrap();
+    statusEl.textContent = result.message || 'Sync started in the background - refresh this page in a bit to see results.';
   }catch(e){
-    statusEl.textContent = 'Sync failed: '+e.message;
+    statusEl.textContent = 'Could not start sync: '+e.message;
   }
 }
 async function clearActuals(){
@@ -845,7 +844,7 @@ function renderGuide(){
     3. <code>python seed_data.py</code> once, to load your real 45 projects/491 team rows/2026 forecast.<br>
     4. <code>python app.py</code>, then open http://localhost:5000</p></div>
   <div class="panel"><h2>Automatic Harvest sync</h2>
-    <p class="muted">While <code>app.py</code> is running, a background job re-syncs the last 2 days of Harvest data every 24 hours automatically. For a sync that runs even when the app isn't open, schedule <code>python sync_once.py</code> with cron (macOS/Linux) or Task Scheduler (Windows) - see comments at the top of that file for exact setup.</p></div>
+    <p class="muted">While <code>app.py</code> is running, a background job re-syncs the last 2 days of Harvest data every 24 hours automatically. Manual syncs (from this tab) also run in the background now - the page returns immediately after you click Sync, and the actual work happens separately so it can't be cut off by a hosting platform's request timeout. Refresh the page after a bit to see the result. For a sync that runs even when the app isn't open at all, schedule <code>python sync_once.py</code> with cron (macOS/Linux) or Task Scheduler (Windows) - see comments at the top of that file for exact setup.</p></div>
   <div class="panel"><h2>Multi-year forecasting</h2>
     <p class="muted">The Year selector at the top of Dashboard/Forecast/Utilization/Milestones switches which 12 months you're viewing and editing. Data is stored per calendar month in SQLite with no practical size limit.</p></div>
   <div class="panel"><h2>Backing up your data</h2>

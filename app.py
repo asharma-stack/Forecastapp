@@ -8,6 +8,7 @@ Then open http://localhost:5000 in your browser. See README.md for setup.
 """
 import os
 import uuid
+import threading
 from flask import Flask, request, jsonify, send_from_directory
 from dotenv import load_dotenv
 
@@ -202,20 +203,9 @@ def _date_chunks(from_date, to_date, chunk_days=30):
         cur = chunk_end + datetime.timedelta(days=1)
 
 
-# ---------------------------------------------------------------- actuals / harvest
-@app.route('/api/harvest/sync', methods=['POST'])
-def harvest_sync():
-    """Manual on-demand sync for an arbitrary date range, triggered from the UI.
-    Large ranges are split into 30-day chunks so a single slow/hanging Harvest
-    API call can't tie up the whole request indefinitely - each chunk commits
-    to the database as soon as it succeeds, so partial progress is never lost
-    even if a later chunk fails or times out."""
-    body = request.json or {}
-    from_date = body.get('from')
-    to_date = body.get('to')
-    if not from_date or not to_date:
-        return jsonify({'ok': False, 'error': 'from and to dates are required'}), 400
-
+def _run_harvest_sync_job(from_date, to_date):
+    """Does the actual work, off the request thread - see harvest_sync() below for why."""
+    import datetime
     total_entries = 0
     all_agg_keys = set()
     chunk_errors = []
@@ -240,18 +230,41 @@ def harvest_sync():
         except Exception as e:
             chunk_errors.append(f'{chunk_from} to {chunk_to}: {e}')
 
-    db.set_meta('last_harvest_sync', __import__('datetime').datetime.now().isoformat())
+    db.set_meta('last_harvest_sync', datetime.datetime.now().isoformat())
     db.set_meta('last_harvest_sync_entries', str(total_entries))
+    db.set_meta('harvest_sync_in_progress', 'false')
+    db.set_meta('last_harvest_sync_errors', '; '.join(chunk_errors) if chunk_errors else '')
 
-    if chunk_errors and total_entries == 0:
-        # Every chunk failed - report as a real failure.
-        return jsonify({'ok': False, 'error': '; '.join(chunk_errors)}), 500
-    result = {'ok': True, 'entriesFetched': total_entries, 'aggregatedKeys': len(all_agg_keys)}
-    if chunk_errors:
-        # Partial success - some date ranges synced, some didn't. Still report ok=True
-        # since real data was saved, but surface which ranges need a retry.
-        result['warning'] = f"{len(chunk_errors)} date range(s) failed and may need retrying: " + '; '.join(chunk_errors)
-    return jsonify(result)
+
+# ---------------------------------------------------------------- actuals / harvest
+@app.route('/api/harvest/sync', methods=['POST'])
+def harvest_sync():
+    """Manual on-demand sync for an arbitrary date range, triggered from the UI.
+
+    This runs in a background thread and returns immediately, rather than making
+    the HTTP request wait for the whole sync to finish. This matters because we
+    confirmed (via Railway's logs) that something in the hosting platform's own
+    network path kills long-lived HTTP requests well under a minute, independent
+    of any timeout we configure in gunicorn - raising server-side timeouts alone
+    can't fix that. The already-working automatic background sync uses this same
+    "don't tie the work to an HTTP request" approach, which is why it never hit
+    this problem in the first place."""
+    body = request.json or {}
+    from_date = body.get('from')
+    to_date = body.get('to')
+    if not from_date or not to_date:
+        return jsonify({'ok': False, 'error': 'from and to dates are required'}), 400
+
+    if db.get_meta('harvest_sync_in_progress') == 'true':
+        return jsonify({'ok': False, 'error': 'A sync is already running - wait for it to finish before starting another.'}), 409
+
+    db.set_meta('harvest_sync_in_progress', 'true')
+    thread = threading.Thread(target=_run_harvest_sync_job, args=(from_date, to_date), daemon=True)
+    thread.start()
+    return jsonify({
+        'ok': True, 'started': True,
+        'message': 'Sync started in the background. Large ranges can take a few minutes - refresh this page to see progress and results.'
+    })
 
 
 @app.route('/api/actuals/clear', methods=['POST'])
