@@ -13,9 +13,40 @@ Credentials come from environment variables (see .env.example):
 Get both from https://id.getharvest.com/developers (create a Personal Access Token).
 """
 import os
+import calendar
+import datetime
 import requests
 
 API_BASE = 'https://api.harvestapp.com/v2'
+
+
+def month_windows(from_date, to_date):
+    """Yield (month_str, first_day_iso, last_day_iso) for every calendar month
+    touched by [from_date, to_date], each spanning the FULL calendar month.
+
+    Why this exists: actuals are stored as a single total per
+    (person, project, month), and every sync OVERWRITES that total. That is only
+    correct if the total was computed from the ENTIRE month's entries. Fetching an
+    arbitrary window (a 30-day chunk, or a 2-day rolling window) and overwriting
+    corrupts any month the window only partially covers - it replaces the real
+    monthly total with just the days that happened to fall inside the window.
+    Iterating whole calendar months makes every write a true monthly total and
+    therefore idempotent and self-healing. Accepts date objects or 'YYYY-MM-DD'
+    strings.
+    """
+    if isinstance(from_date, str):
+        from_date = datetime.date.fromisoformat(from_date)
+    if isinstance(to_date, str):
+        to_date = datetime.date.fromisoformat(to_date)
+    y, m = from_date.year, from_date.month
+    while (y, m) <= (to_date.year, to_date.month):
+        last = calendar.monthrange(y, m)[1]
+        yield (
+            f'{y:04d}-{m:02d}',
+            datetime.date(y, m, 1).isoformat(),
+            datetime.date(y, m, last).isoformat(),
+        )
+        y, m = (y + 1, 1) if m == 12 else (y, m + 1)
 
 
 def _headers():

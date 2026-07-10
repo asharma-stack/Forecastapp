@@ -16,7 +16,7 @@ load_dotenv()
 
 import db
 from scheduler import start_scheduler, run_sync
-from harvest_client import fetch_time_entries, aggregate_entries, is_billable_entry
+from harvest_client import fetch_time_entries, aggregate_entries, is_billable_entry, month_windows
 
 app = Flask(__name__, static_folder='static', template_folder='templates')
 
@@ -210,17 +210,6 @@ def set_working_days():
     return jsonify({'ok': True})
 
 
-def _date_chunks(from_date, to_date, chunk_days=30):
-    import datetime
-    start = datetime.date.fromisoformat(from_date)
-    end = datetime.date.fromisoformat(to_date)
-    cur = start
-    while cur <= end:
-        chunk_end = min(cur + datetime.timedelta(days=chunk_days - 1), end)
-        yield cur.isoformat(), chunk_end.isoformat()
-        cur = chunk_end + datetime.timedelta(days=1)
-
-
 def _run_harvest_sync_job(from_date, to_date):
     """Does the actual work, off the request thread - see harvest_sync() below for why.
     Logs each step with print() (flushed immediately) so Railway's log stream shows
@@ -232,25 +221,35 @@ def _run_harvest_sync_job(from_date, to_date):
     total_missing_rate_hours = 0.0
     chunk_errors = []
 
-    chunks = list(_date_chunks(from_date, to_date, chunk_days=30))
-    print(f'[harvest sync] split into {len(chunks)} chunk(s): {chunks}', flush=True)
+    windows = list(month_windows(from_date, to_date))
+    print(f'[harvest sync] range snapped to {len(windows)} whole month(s): {[w[0] for w in windows]} '
+          f'(actuals are stored as one total per month, so each month is always fetched in full)', flush=True)
 
-    for i, (chunk_from, chunk_to) in enumerate(chunks):
-        print(f'[harvest sync] chunk {i+1}/{len(chunks)}: fetching {chunk_from} to {chunk_to}...', flush=True)
+    for i, (month_str, m_from, m_to) in enumerate(windows):
+        print(f'[harvest sync] month {i+1}/{len(windows)} ({month_str}): fetching {m_from} to {m_to}...', flush=True)
         try:
-            entries = fetch_time_entries(chunk_from, chunk_to)
+            entries = fetch_time_entries(m_from, m_to)
             billable_count = sum(1 for e in entries if is_billable_entry(e))
-            print(f'[harvest sync] chunk {i+1}/{len(chunks)}: got {len(entries)} raw entries ({billable_count} billable, {len(entries)-billable_count} non-billable - only billable ones are aggregated)', flush=True)
+            print(f'[harvest sync] month {i+1}/{len(windows)} ({month_str}): got {len(entries)} raw entries ({billable_count} billable, {len(entries)-billable_count} non-billable - only billable ones are aggregated)', flush=True)
             hours_agg, dollars_agg, missing_rate_hours = aggregate_entries(entries)
+
+            # Whole-month fetch -> rebuild this month exactly. Delete the month first
+            # (so entries deleted/edited in Harvest are reflected and nothing stale
+            # lingers), then insert the fresh per-(person,project) totals. Because the
+            # fetch covers the ENTIRE calendar month, every stored total is a true
+            # monthly total - never a partial-window value. This is what the old
+            # 30-day-chunk + overwrite approach got wrong: a chunk that clipped a
+            # month boundary overwrote that month's real total with a day or two.
             conn = db.get_connection()
             try:
+                conn.execute('DELETE FROM actuals WHERE month = ?', (month_str,))
                 for key, hours in hours_agg.items():
                     person, project_id, month = key
-                    dollars = dollars_agg.get(key, 0)
+                    if month != month_str:
+                        continue  # defensive: a full-month fetch should only yield this month
                     conn.execute(
-                        '''INSERT INTO actuals (person, project_id, month, hours, dollars) VALUES (?,?,?,?,?)
-                           ON CONFLICT(person, project_id, month) DO UPDATE SET hours = excluded.hours, dollars = excluded.dollars''',
-                        (person, project_id, month, hours, dollars)
+                        'INSERT INTO actuals (person, project_id, month, hours, dollars) VALUES (?,?,?,?,?)',
+                        (person, project_id, month, hours, dollars_agg.get(key, 0))
                     )
                 conn.commit()
             finally:
@@ -258,9 +257,9 @@ def _run_harvest_sync_job(from_date, to_date):
             total_entries += len(entries)
             all_agg_keys.update(hours_agg.keys())
             total_missing_rate_hours += missing_rate_hours
-            print(f'[harvest sync] chunk {i+1}/{len(chunks)}: saved {len(hours_agg)} person/project/month rows (${sum(dollars_agg.values()):,.2f} total actual $ this chunk)', flush=True)
+            print(f'[harvest sync] month {i+1}/{len(windows)} ({month_str}): saved {len(hours_agg)} person/project rows (${sum(dollars_agg.values()):,.2f} total actual $ this month)', flush=True)
             if missing_rate_hours > 0:
-                print(f'[harvest sync] chunk {i+1}/{len(chunks)}: WARNING - {missing_rate_hours:.1f} billable hours had no billable_rate from Harvest (commonly a token permissions issue - viewing rates via the API usually requires an Administrator-level Personal Access Token). Those hours contributed $0 to actual $.', flush=True)
+                print(f'[harvest sync] month {i+1}/{len(windows)} ({month_str}): WARNING - {missing_rate_hours:.1f} billable hours had no billable_rate from Harvest (commonly a token permissions issue - viewing rates via the API usually requires an Administrator-level Personal Access Token). Those hours contributed $0 to actual $.', flush=True)
 
             known_project_ids = {r['id'] for r in db.query('SELECT id FROM projects')}
             unmatched = {}
@@ -269,10 +268,10 @@ def _run_harvest_sync_job(from_date, to_date):
                     unmatched[project_id] = unmatched.get(project_id, 0) + hours
             if unmatched:
                 total_unmatched_hours = sum(unmatched.values())
-                print(f'[harvest sync] chunk {i+1}/{len(chunks)}: WARNING - {total_unmatched_hours:.1f} billable hours are under project code(s) that do NOT match any project in this app: {unmatched} - these hours are saved but will never show up against a real project anywhere in the app, since nothing joins to them. If this number is large, the project codes in Harvest likely differ from the ones seeded here.', flush=True)
+                print(f'[harvest sync] month {i+1}/{len(windows)} ({month_str}): WARNING - {total_unmatched_hours:.1f} billable hours are under project code(s) that do NOT match any project in this app: {unmatched} - these hours are saved but will never show up against a real project anywhere in the app, since nothing joins to them. If this number is large, the project codes in Harvest likely differ from the ones seeded here.', flush=True)
         except Exception as e:
-            print(f'[harvest sync] chunk {i+1}/{len(chunks)}: FAILED - {type(e).__name__}: {e}', flush=True)
-            chunk_errors.append(f'{chunk_from} to {chunk_to}: {e}')
+            print(f'[harvest sync] month {i+1}/{len(windows)} ({month_str}): FAILED - {type(e).__name__}: {e}', flush=True)
+            chunk_errors.append(f'{month_str} ({m_from} to {m_to}): {e}')
 
     db.set_meta('last_harvest_sync', datetime.datetime.now().isoformat())
     db.set_meta('last_harvest_sync_entries', str(total_entries))
