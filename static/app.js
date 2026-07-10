@@ -80,13 +80,9 @@ function projectTotalForecast(project){
 }
 function actualDollarsForProject(projectId){
   let total = 0;
-  Object.keys(DATA.actuals).forEach(key=>{
+  Object.keys(DATA.actualsDollars||{}).forEach(key=>{
     const [person, pid, month] = key.split('|');
-    if(pid===projectId){
-      const t = DATA.team.find(x=>x.project_id===projectId && x.person===person);
-      const rate = t? t.rate : 0;
-      total += (DATA.actuals[key]/8)*rate;
-    }
+    if(pid===projectId) total += DATA.actualsDollars[key];
   });
   return total;
 }
@@ -738,13 +734,12 @@ function personRateFor(person, projectId){
 function personForecastDollarInMonth(person, monthKey){
   return DATA.team.filter(t=>t.person===person).reduce((s,t)=>s + forecastVal(t.id, monthKey) * t.rate, 0);
 }
+function actualDollarsFor(person, projectId, monthKey){ return (DATA.actualsDollars||{})[person+'|'+projectId+'|'+monthKey] || 0; }
 function personActualDollarInMonth(person, monthKey){
   let total = 0;
-  Object.keys(DATA.actuals).forEach(key=>{
+  Object.keys(DATA.actualsDollars||{}).forEach(key=>{
     const [p, pid, month] = key.split('|');
-    if(p===person && month===monthKey){
-      total += (DATA.actuals[key]/8) * personRateFor(person, pid);
-    }
+    if(p===person && month===monthKey) total += DATA.actualsDollars[key];
   });
   return total;
 }
@@ -753,7 +748,7 @@ function personForecastDollarInMonthForProject(person, projectId, monthKey){
   return t ? forecastVal(t.id, monthKey) * t.rate : 0;
 }
 function personActualDollarInMonthForProject(person, projectId, monthKey){
-  return personActualDaysInMonthForProject(person, projectId, monthKey) * personRateFor(person, projectId);
+  return actualDollarsFor(person, projectId, monthKey);
 }
 function renderForecastVsActualAmount(){
   const MONTHS = getMonths();
@@ -804,7 +799,7 @@ function renderForecastVsActualAmount(){
 
   return `
   <h1>Forecast vs Actual - Amount</h1>
-  <div class="lead">Forecasted $ (days x rate) vs actual $ from synced Harvest data, per person, month by month, side by side. Click + to break a person down by project. ${haveActuals?'':'No Harvest data synced yet - use the Actuals tab.'}</div>
+  <div class="lead">Forecasted $ (days x rate) vs actual $ from synced Harvest data, per person, month by month, side by side. Actual $ comes directly from each Harvest time entry's own billable rate - not this app's forecast rate - so it matches Harvest's own reports. Click + to break a person down by project. ${haveActuals?'':'No Harvest data synced yet - use the Actuals tab.'}</div>
   ${statusLegend()}
   <div class="toolbar">${yearSelector()}
     <div class="field" style="min-width:260px"><label>Filter to a person</label>${personCombo(UI.fvaAmountPersonFilter, 'setFvaAmountPersonFilter')}</div>
@@ -822,11 +817,9 @@ function toggleProjFvaAmountProject(pid){ UI.projFvaAmountProject = UI.projFvaAm
 function setProjFvaAmountFilter(id){ UI.projFvaAmountFilter = id; render(); }
 function projectActualDollarInMonth(project, monthKey){
   let total = 0;
-  Object.keys(DATA.actuals).forEach(key=>{
+  Object.keys(DATA.actualsDollars||{}).forEach(key=>{
     const [person, pid, month] = key.split('|');
-    if(pid===project.id && month===monthKey){
-      total += (DATA.actuals[key]/8) * personRateFor(person, pid);
-    }
+    if(pid===project.id && month===monthKey) total += DATA.actualsDollars[key];
   });
   return total;
 }
@@ -887,7 +880,7 @@ function renderProjectForecastVsActualAmount(){
 
   return `
   <h1>Project - Forecast vs Actual ($)</h1>
-  <div class="lead">Forecasted revenue vs actual revenue (from synced Harvest data), per billable time-based project, month by month, side by side. Only projects with some forecast or some logged time this year are shown. Click + to see the per-person breakdown within a project. ${haveActuals?'':'No Harvest data synced yet - use the Actuals tab.'}</div>
+  <div class="lead">Forecasted revenue vs actual revenue (from synced Harvest data), per billable time-based project, month by month, side by side. Actual $ comes directly from each Harvest time entry's own billable rate - not this app's forecast rate - so it matches Harvest's own reports. Only projects with some forecast or some logged time this year are shown. Click + to see the per-person breakdown within a project. ${haveActuals?'':'No Harvest data synced yet - use the Actuals tab.'}</div>
   ${statusLegend()}
   <div class="toolbar">${yearSelector()}
     <div class="field" style="min-width:300px"><label>Filter to a project</label>${projectCombo(UI.projFvaAmountFilter,'setProjFvaAmountFilter',{allowAll:true, filterFn:p=>p.type==='time'})}</div>
@@ -1008,6 +1001,8 @@ function renderGuide(){
     <p class="muted">While <code>app.py</code> is running, a background job re-syncs the last 2 days of Harvest data every 24 hours automatically. For a sync that runs even when the app isn't open, schedule <code>python sync_once.py</code> with cron (macOS/Linux) or Task Scheduler (Windows) - see comments at the top of that file for exact setup.</p></div>
   <div class="panel"><h2>Multi-year forecasting</h2>
     <p class="muted">The Year selector at the top of Dashboard/Forecast/Utilization/Milestones switches which 12 months you're viewing and editing. Data is stored per calendar month in SQLite with no practical size limit.</p></div>
+  <div class="panel"><h2>Actual $ comes from Harvest's own rate, not this app's forecast rate</h2>
+    <p class="muted">Forecast $ = forecast days x this app's forecast rate (a planning input you set on the Forecast tab). Actual $ = each Harvest time entry's own hours x that entry's own billable_rate, summed directly - the same calculation Harvest's own reports use. These are deliberately two different rates: forecast rate is what you planned to charge, Harvest's billable_rate is what's actually configured for billing today. They won't always match, and that's fine - the variance between them is exactly what this app is meant to surface.</p></div>
   <div class="panel"><h2>Backing up your data</h2>
     <p class="muted">Everything lives in <code>forecast_ledger.db</code> in this folder - a single SQLite file. Back it up by simply copying that file.</p></div>`;
 }

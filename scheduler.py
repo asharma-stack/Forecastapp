@@ -33,25 +33,30 @@ def run_sync(days_back=2):
         to_date = datetime.date.today()
         from_date = to_date - datetime.timedelta(days=days_back)
         entries = fetch_time_entries(from_date.isoformat(), to_date.isoformat())
-        agg = aggregate_entries(entries)
+        hours_agg, dollars_agg, missing_rate_hours = aggregate_entries(entries)
 
         conn = db.get_connection()
         try:
-            for (person, project_id, month), hours in agg.items():
+            for key, hours in hours_agg.items():
+                person, project_id, month = key
+                dollars = dollars_agg.get(key, 0)
                 conn.execute(
-                    '''INSERT INTO actuals (person, project_id, month, hours)
-                       VALUES (?, ?, ?, ?)
+                    '''INSERT INTO actuals (person, project_id, month, hours, dollars)
+                       VALUES (?, ?, ?, ?, ?)
                        ON CONFLICT(person, project_id, month)
-                       DO UPDATE SET hours = excluded.hours''',
-                    (person, project_id, month, hours)
+                       DO UPDATE SET hours = excluded.hours, dollars = excluded.dollars''',
+                    (person, project_id, month, hours, dollars)
                 )
             conn.commit()
         finally:
             conn.close()
 
+        if missing_rate_hours > 0:
+            print(f'[scheduler] WARNING - {missing_rate_hours:.1f} billable hours had no billable_rate from Harvest (likely a token permissions issue) - actual $ for those hours defaulted to $0.')
+
         db.set_meta('last_harvest_sync', datetime.datetime.now().isoformat())
         db.set_meta('last_harvest_sync_entries', str(len(entries)))
-        return {'entries_fetched': len(entries), 'aggregated_keys': len(agg)}
+        return {'entries_fetched': len(entries), 'aggregated_keys': len(hours_agg)}
 
 
 def start_scheduler(interval_hours=24):

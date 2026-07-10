@@ -65,17 +65,36 @@ def is_billable_entry(entry):
 
 def aggregate_entries(entries):
     """
-    Collapse raw time entries into {(person, project_id, month): hours} totals -
-    the same aggregation the app stores, so a multi-year pull never becomes a
-    multi-hundred-thousand-row problem in memory or in the database.
+    Collapse raw time entries into per (person, project_id, month) totals - the same
+    aggregation the app stores, so a multi-year pull never becomes a multi-hundred-
+    thousand-row problem in memory or in the database.
 
-    Only billable entries are included (see is_billable_entry above). This matters
-    because every dollar figure in this app - Forecast vs Actual Amount, Project
-    Forecast vs Actual ($), the "Actual (Harvest-synced)" KPI - is computed as
-    hours x rate. Including non-billable hours in that math overstates actual
-    revenue and produces misleading variance numbers.
+    Returns (hours_agg, dollars_agg, missing_rate_hours):
+      - hours_agg: total billable hours per key - used for day/utilization comparisons.
+      - dollars_agg: actual billed dollar amount per key, computed directly from each
+        entry's own `billable_rate` x `hours` - exactly how Harvest's own reports compute
+        it. This does NOT use this app's internal forecast rate table. That distinction
+        matters: our forecast rates are planning inputs set when building the forecast
+        model, and don't necessarily match what's actually configured as each person's
+        real billable rate in Harvest today. Multiplying actual hours by our forecast
+        rate produced dollar figures that didn't match Harvest's own numbers - sometimes
+        higher, sometimes lower, with no consistent pattern, because the two rates are
+        simply different things. Using Harvest's own billable_rate per entry makes
+        "Actual $" in this app match Harvest's own reports exactly.
+      - missing_rate_hours: total hours where Harvest didn't return a billable_rate for
+        an otherwise-billable entry (commonly because the API token's user doesn't have
+        "view rates" permission in Harvest - usually requires an Administrator-level
+        token). Those hours are still counted in hours_agg but contribute $0 to
+        dollars_agg, since there's no rate to compute a dollar amount from.
+
+    Only billable entries are included at all (see is_billable_entry above) - a billable
+    project can still have individual non-billable entries, and those should count
+    toward neither hours nor dollars here.
     """
-    agg = {}
+    hours_agg = {}
+    dollars_agg = {}
+    missing_rate_hours = 0.0
+
     for e in entries:
         if not is_billable_entry(e):
             continue
@@ -86,7 +105,16 @@ def aggregate_entries(entries):
         person = (e.get('user') or {}).get('name', '')
         project = e.get('project') or {}
         project_id = project.get('code') or project.get('name', '')
-        hours = e.get('hours', 0) or 0
+        hours = float(e.get('hours', 0) or 0)
         key = (person, project_id, month)
-        agg[key] = agg.get(key, 0) + float(hours)
-    return agg
+
+        hours_agg[key] = hours_agg.get(key, 0) + hours
+        dollars_agg.setdefault(key, 0.0)
+
+        rate = e.get('billable_rate')
+        if rate is not None:
+            dollars_agg[key] += hours * float(rate)
+        else:
+            missing_rate_hours += hours
+
+    return hours_agg, dollars_agg, missing_rate_hours

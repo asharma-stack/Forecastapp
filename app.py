@@ -77,11 +77,12 @@ def bootstrap():
 
     forecast = {f"{r['team_id']}|{r['month']}": r['days'] for r in forecast_rows}
     actuals = {f"{r['person']}|{r['project_id']}|{r['month']}": r['hours'] for r in actuals_rows}
+    actuals_dollars = {f"{r['person']}|{r['project_id']}|{r['month']}": r['dollars'] for r in actuals_rows}
     working_days_map = {r['month']: r['days'] for r in working_days}
 
     return jsonify({
         'projects': projects, 'team': team, 'milestones': milestones,
-        'workingDays': working_days_map, 'forecast': forecast, 'actuals': actuals,
+        'workingDays': working_days_map, 'forecast': forecast, 'actuals': actuals, 'actualsDollars': actuals_dollars,
         'lastHarvestSync': last_sync, 'lastHarvestSyncEntries': last_sync_entries,
         'lockedMonths': locked_months, 'peopleStatus': people_status,
     })
@@ -228,6 +229,7 @@ def _run_harvest_sync_job(from_date, to_date):
     print(f'[harvest sync] job started: {from_date} to {to_date}', flush=True)
     total_entries = 0
     all_agg_keys = set()
+    total_missing_rate_hours = 0.0
     chunk_errors = []
 
     chunks = list(_date_chunks(from_date, to_date, chunk_days=30))
@@ -239,25 +241,30 @@ def _run_harvest_sync_job(from_date, to_date):
             entries = fetch_time_entries(chunk_from, chunk_to)
             billable_count = sum(1 for e in entries if is_billable_entry(e))
             print(f'[harvest sync] chunk {i+1}/{len(chunks)}: got {len(entries)} raw entries ({billable_count} billable, {len(entries)-billable_count} non-billable - only billable ones are aggregated)', flush=True)
-            agg = aggregate_entries(entries)
+            hours_agg, dollars_agg, missing_rate_hours = aggregate_entries(entries)
             conn = db.get_connection()
             try:
-                for (person, project_id, month), hours in agg.items():
+                for key, hours in hours_agg.items():
+                    person, project_id, month = key
+                    dollars = dollars_agg.get(key, 0)
                     conn.execute(
-                        '''INSERT INTO actuals (person, project_id, month, hours) VALUES (?,?,?,?)
-                           ON CONFLICT(person, project_id, month) DO UPDATE SET hours = excluded.hours''',
-                        (person, project_id, month, hours)
+                        '''INSERT INTO actuals (person, project_id, month, hours, dollars) VALUES (?,?,?,?,?)
+                           ON CONFLICT(person, project_id, month) DO UPDATE SET hours = excluded.hours, dollars = excluded.dollars''',
+                        (person, project_id, month, hours, dollars)
                     )
                 conn.commit()
             finally:
                 conn.close()
             total_entries += len(entries)
-            all_agg_keys.update(agg.keys())
-            print(f'[harvest sync] chunk {i+1}/{len(chunks)}: saved {len(agg)} person/project/month rows', flush=True)
+            all_agg_keys.update(hours_agg.keys())
+            total_missing_rate_hours += missing_rate_hours
+            print(f'[harvest sync] chunk {i+1}/{len(chunks)}: saved {len(hours_agg)} person/project/month rows (${sum(dollars_agg.values()):,.2f} total actual $ this chunk)', flush=True)
+            if missing_rate_hours > 0:
+                print(f'[harvest sync] chunk {i+1}/{len(chunks)}: WARNING - {missing_rate_hours:.1f} billable hours had no billable_rate from Harvest (commonly a token permissions issue - viewing rates via the API usually requires an Administrator-level Personal Access Token). Those hours contributed $0 to actual $.', flush=True)
 
             known_project_ids = {r['id'] for r in db.query('SELECT id FROM projects')}
             unmatched = {}
-            for (person, project_id, month), hours in agg.items():
+            for (person, project_id, month), hours in hours_agg.items():
                 if project_id not in known_project_ids:
                     unmatched[project_id] = unmatched.get(project_id, 0) + hours
             if unmatched:
@@ -271,7 +278,7 @@ def _run_harvest_sync_job(from_date, to_date):
     db.set_meta('last_harvest_sync_entries', str(total_entries))
     db.set_meta('harvest_sync_in_progress', 'false')
     db.set_meta('last_harvest_sync_errors', '; '.join(chunk_errors) if chunk_errors else '')
-    print(f'[harvest sync] job finished: {total_entries} total entries, {len(all_agg_keys)} aggregated rows, {len(chunk_errors)} chunk error(s)', flush=True)
+    print(f'[harvest sync] job finished: {total_entries} total entries, {len(all_agg_keys)} aggregated rows, {total_missing_rate_hours:.1f} hours missing a billable rate, {len(chunk_errors)} chunk error(s)', flush=True)
 
 
 # ---------------------------------------------------------------- actuals / harvest

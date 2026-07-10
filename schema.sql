@@ -48,11 +48,19 @@ CREATE TABLE IF NOT EXISTS working_days (
 -- raw Harvest time entries fed into it. This is what makes arbitrarily large Harvest
 -- history (years of data) a non-issue - SQLite handles this natively with no blob-size
 -- limits, unlike the old browser-storage approach.
+--
+-- `hours` = total billable hours logged (used for day/utilization comparisons).
+-- `dollars` = the actual billed amount, computed directly from each entry's own
+-- Harvest billable_rate x hours at sync time - NOT hours x this app's forecast rate.
+-- Those are different rates (planning input vs Harvest's real configured billing
+-- rate) and using the forecast rate to compute "actual $" produced numbers that
+-- didn't match Harvest's own reports.
 CREATE TABLE IF NOT EXISTS actuals (
     person TEXT NOT NULL,
     project_id TEXT NOT NULL,
     month TEXT NOT NULL,          -- 'YYYY-MM'
     hours REAL NOT NULL DEFAULT 0,
+    dollars REAL NOT NULL DEFAULT 0,
     PRIMARY KEY (person, project_id, month)
 );
 CREATE INDEX IF NOT EXISTS idx_actuals_person ON actuals(person);

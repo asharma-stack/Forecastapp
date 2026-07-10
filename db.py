@@ -33,6 +33,14 @@ def init_db():
     with open(SCHEMA_PATH, 'r') as f:
         conn.executescript(f.read())
     conn.commit()
+    # Migration: existing databases (created before the `dollars` column existed)
+    # need it added explicitly - SQLite has no "ADD COLUMN IF NOT EXISTS", so we
+    # try and silently ignore the error if it's already there.
+    try:
+        conn.execute('ALTER TABLE actuals ADD COLUMN dollars REAL NOT NULL DEFAULT 0')
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # column already exists
     conn.close()
 
 
